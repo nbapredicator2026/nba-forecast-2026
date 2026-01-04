@@ -5,10 +5,18 @@ from nba_api.stats.endpoints import commonteamroster, leaguedashteamstats, playe
 import plotly.graph_objects as go
 import time
 
-# --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="NBA Forecast v3.2", page_icon="🏀", layout="wide")
+# --- CONFIGURAÇÃO MOBILE-FIRST ---
+st.set_page_config(page_title="NBA Intel 2026", page_icon="🏀", layout="centered")
 
-# --- FUNÇÕES DE DADOS ---
+# CSS para remover margens excessivas e estilizar métricas no celular
+st.markdown("""
+    <style>
+    .block-container { padding-top: 1rem; padding-bottom: 1rem; }
+    [data-testid="stMetric"] { background: #f0f2f6; padding: 10px; border-radius: 10px; }
+    .stButton>button { width: 100%; border-radius: 20px; height: 3em; font-weight: bold; }
+    </style>
+    """, unsafe_allow_html=True)
+
 @st.cache_data(ttl=86400)
 def carregar_lista_times():
     return {t['full_name']: t['id'] for t in teams.get_teams()}
@@ -33,81 +41,83 @@ def buscar_estatisticas_jogador(player_id):
     stats = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(player_id=player_id, per_mode_detailed='PerGame').get_data_frames()[0]
     return stats[['PTS', 'AST', 'REB', 'STL', 'BLK']].iloc[0].to_dict()
 
-# --- INTERFACE PRINCIPAL ---
-st.title("🏀 NBA Intelligence Forecast v3.2")
-st.markdown("Análise multi-atributo com cruzamento de dados defensivos e comparação visual.")
+# --- INTERFACE ---
+st.title("🏀 NBA Intel Forecast")
 
-# Sidebar
-st.sidebar.header("Configuração do Confronto")
-dict_times = carregar_lista_times()
-time_nome = st.sidebar.selectbox("Selecione o Time do Jogador", sorted(dict_times.keys()))
-df_elenco = buscar_elenco(dict_times[time_nome])
-jogador_nome = st.sidebar.selectbox("Selecione o Jogador", df_elenco['PLAYER'].tolist())
-player_id = df_elenco[df_elenco['PLAYER'] == jogador_nome]['PLAYER_ID'].values[0]
-adversario_nome = st.sidebar.selectbox("Adversário (Time Defensor)", sorted(dict_times.keys()))
+# Sidebar para configurações (fica escondida no iPhone)
+with st.sidebar:
+    st.header("Configuração")
+    dict_times = carregar_lista_times()
+    time_nome = st.selectbox("Time do Jogador", sorted(dict_times.keys()))
+    df_elenco = buscar_elenco(dict_times[time_nome])
+    jogador_nome = st.selectbox("Jogador", df_elenco['PLAYER'].tolist())
+    player_id = df_elenco[df_elenco['PLAYER'] == jogador_nome]['PLAYER_ID'].values[0]
+    adversario_nome = st.selectbox("Adversário (Defesa)", sorted(dict_times.keys()))
 
 try:
     stats = buscar_estatisticas_jogador(player_id)
     df_def = obter_ranking_defensivo()
     rank_def_adv = df_def[df_def['TEAM_NAME'] == adversario_nome]['RANK'].values[0]
 
-    # Painel de Médias Reais
-    st.subheader(f"📊 Desempenho Real: {jogador_nome}")
-    m_cols = st.columns(5)
-    categorias = ['PTS', 'AST', 'REB', 'STL', 'BLK']
+    # Resumo Real (Horizontal no PC, Vertical no Celular)
+    st.subheader(f"📊 Real: {jogador_nome}")
+    m_cols = st.columns(3) # No celular vira coluna única automaticamente
+    cats = ['PTS', 'AST', 'REB', 'STL', 'BLK']
     labels = ['PONTOS', 'ASSIST', 'REB', 'STEALS', 'BLOCKS']
     
-    for i, cat in enumerate(categorias):
-        m_cols[i].metric(labels[i], f"{stats[cat]:.1f}")
+    m_cols[0].metric("PTS", f"{stats['PTS']:.1f}")
+    m_cols[1].metric("AST", f"{stats['AST']:.1f}")
+    m_cols[2].metric("REB", f"{stats['REB']:.1f}")
 
     st.markdown("---")
-
-    # Área de Previsão Manual (TODOS OS CAMPOS RESTAURADOS)
-    st.subheader(f"🔮 Sua Previsão contra {adversario_nome}")
-    c_in = st.columns(5)
+    st.subheader(f"🔮 Previsão vs {adversario_nome}")
+    
+    # Inputs condensados
     u_vals = {}
-    u_vals['PTS'] = c_in[0].number_input("PONTOS", value=float(stats['PTS']), step=0.5)
-    u_vals['AST'] = c_in[1].number_input("ASSIST", value=float(stats['AST']), step=0.5)
-    u_vals['REB'] = c_in[2].number_input("REB", value=float(stats['REB']), step=0.5)
-    u_vals['STL'] = c_in[3].number_input("STEALS", value=float(stats['STL']), step=0.5)
-    u_vals['BLK'] = c_in[4].number_input("BLOCKS", value=float(stats['BLK']), step=0.5)
+    for i, cat in enumerate(cats):
+        u_vals[cat] = st.number_input(labels[i], value=float(stats[cat]), step=0.5, key=cat)
 
-    if st.button("EXECUTAR ANÁLISE E GERAR GRÁFICO"):
-        with st.spinner('Analisando todos os atributos...'):
-            time.sleep(0.8)
+    if st.button("ANALISAR AGORA"):
+        # 1. Gráfico Otimizado para Celular
+        fig = go.Figure()
+        fig.add_trace(go.Bar(name='Média', x=labels, y=[stats[c] for c in cats], marker_color='#1f77b4'))
+        fig.add_trace(go.Bar(name='Previsão', x=labels, y=[u_vals[c] for c in cats], marker_color='#ff7f0e'))
+        
+        fig.update_layout(
+            barmode='group', 
+            height=300, 
+            margin=dict(l=0, r=0, t=30, b=0),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)'
+        )
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+        # 2. Veredito em Cards de Cores (Melhor para iPhone)
+        st.markdown("### 📈 Veredito por Atributo")
+        for i, cat in enumerate(cats):
+            exp = stats[cat] * (1 - (15 - rank_def_adv) * 0.012)
+            diff = (u_vals[cat] - exp) / (exp if exp != 0 else 1)
             
-            # 1. Lógica de Probabilidade Independente por Atributo
-            def analisar_prob(v_user, v_real, r_def):
-                # Ajuste defensivo: defesas fortes reduzem a expectativa
-                expectativa = v_real * (1 - (15 - r_def) * 0.012)
-                diff = (v_user - expectativa) / expectativa
-                if diff <= 0.05: return "Muito Provável ✅"
-                elif diff <= 0.20: return "Incerto ⚠️"
-                else: return "Improvável ❌"
-
-            # 2. Gráfico de Barras Agrupadas
-            fig = go.Figure()
-            fig.add_trace(go.Bar(name='Média Real', x=labels, y=[stats[c] for c in categorias], marker_color='#1f77b4'))
-            fig.add_trace(go.Bar(name='Sua Previsão', x=labels, y=[u_vals[c] for c in categorias], marker_color='#ff7f0e'))
-            fig.update_layout(barmode='group', title=f"Comparação Real vs Previsão: {jogador_nome}", yaxis_title="Valores")
-            st.plotly_chart(fig, use_container_width=True)
-
-            # 3. Veredito Individual (Item 1 corrigido)
-            st.markdown("### 📈 Veredito por Atributo:")
-            res_cols = st.columns(5)
-            for i, cat in enumerate(categorias):
-                veredito = analisar_prob(u_vals[cat], stats[cat], rank_def_adv)
-                res_cols[i].markdown(f"**{labels[i]}**\n\n{veredito}")
-
-            # 4. Insight do Especialista (Item 2 corrigido)
-            st.markdown("---")
-            st.subheader("💡 Insight do Especialista")
-            if rank_def_adv <= 5:
-                st.error(f"**Dificuldade Máxima:** O {adversario_nome} possui uma defesa de ELITE (Rank {rank_def_adv}º). Marcar pontos ou distribuir assistências acima da média será um desafio físico e tático extremo para {jogador_nome}.")
-            elif rank_def_adv >= 25:
-                st.success(f"**Cenário Favorável:** A defesa do {adversario_nome} é uma das mais permissivas (Rank {rank_def_adv}º). Há uma alta probabilidade de {jogador_nome} superar suas médias habituais em volume de jogo.")
+            if diff <= 0.05:
+                cor, emoji, txt = "#D4EDDA", "✅", "Provável"
+                txt_color = "#155724"
+            elif diff <= 0.20:
+                cor, emoji, txt = "#FFF3CD", "⚠️", "Incerto"
+                txt_color = "#856404"
             else:
-                st.info(f"**Confronto Equilibrado:** O {adversario_nome} mantém uma defesa média (Rank {rank_def_adv}º). O desempenho deve orbitar as estatísticas da temporada, dependendo mais do ritmo individual do jogador.")
+                cor, emoji, txt = "#F8D7DA", "❌", "Improvável"
+                txt_color = "#721C24"
+            
+            st.markdown(f"""
+                <div style="background-color:{cor}; color:{txt_color}; padding:15px; border-radius:12px; margin-bottom:10px; border-left: 5px solid {txt_color}">
+                    <div style="font-size:0.8rem; text-transform:uppercase; font-weight:bold;">{labels[i]}</div>
+                    <div style="font-size:1.1rem;">{txt} {emoji}</div>
+                </div>
+            """, unsafe_allow_html=True)
+
+        # 3. Insight
+        st.info(f"💡 **Defesa do {adversario_nome}:** Rank {rank_def_adv}º de 30.")
 
 except Exception as e:
-    st.error(f"Erro ao processar dados: {e}")
+    st.error(f"Selecione os times no menu lateral para começar!")
