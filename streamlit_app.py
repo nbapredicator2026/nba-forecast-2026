@@ -4,20 +4,22 @@ from nba_api.stats.static import teams
 from nba_api.stats.endpoints import commonteamroster, leaguedashteamstats, playerdashboardbygeneralsplits
 
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="NBA Intel v4.0", page_icon="🏀", layout="centered")
+st.set_page_config(page_title="NBA Intel Pro v5.0", page_icon="🏀", layout="centered")
 
-# CSS para esconder mensagens de erro nativas do Python
-st.markdown("<style>#MainMenu {visibility: hidden;} footer {visibility: hidden;} .stError {display: none;}</style>", unsafe_allow_html=True)
+# CSS para esconder erros nativos e polir a interface
+st.markdown("<style>.stError, .stException {display: none;} .stMetric {border: 1px solid #eee; padding: 10px; border-radius: 8px;}</style>", unsafe_allow_html=True)
 
-# --- FUNÇÕES COM PROTEÇÃO MÁXIMA ---
+# --- INICIALIZAÇÃO DE ESTADO (O SEGREDO DA ESTABILIDADE) ---
+if 'data_ready' not in st.session_state:
+    st.session_state.data_ready = False
+
+# --- FUNÇÕES NATIVAS ---
 @st.cache_data(ttl=86400)
-def get_all_teams():
-    try:
-        return {t['full_name']: t['id'] for t in teams.get_teams()}
-    except: return {}
+def load_teams():
+    return {t['full_name']: t['id'] for t in teams.get_teams()}
 
 @st.cache_data(ttl=3600)
-def get_defense_data():
+def get_ranks():
     try:
         df = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense='Defense', season='2025-26').get_data_frames()[0]
         df = df[['TEAM_NAME', 'DEF_RATING']].sort_values('DEF_RATING')
@@ -25,80 +27,74 @@ def get_defense_data():
         return df
     except: return pd.DataFrame()
 
-# --- INTERFACE ---
-st.title("🏀 NBA Intel Forecast v4.0")
-
-dict_times = get_all_teams()
-if not dict_times:
-    st.error("Erro de conexão com a NBA. Atualize a página.")
-    st.stop()
+# --- SIDEBAR COM VALIDAÇÃO ---
+st.title("🏀 NBA Intel Forecast")
+all_teams = load_teams()
 
 with st.sidebar:
     st.header("Configuração")
-    time_p = st.selectbox("Time do Jogador", sorted(dict_times.keys()), key="sb_time")
+    t_player = st.selectbox("Time do Jogador", sorted(all_teams.keys()), key="tp")
     
-    # Carregamento do elenco protegido
+    # Carregamento seguro de elenco
     try:
-        elenco = commonteamroster.CommonTeamRoster(team_id=dict_times[time_p], season='2025-26').get_data_frames()[0]
-        lista_jogadores = elenco['PLAYER'].tolist()
+        roster = commonteamroster.CommonTeamRoster(team_id=all_teams[t_player], season='2025-26').get_data_frames()[0]
+        p_list = roster['PLAYER'].tolist()
     except:
-        lista_jogadores = []
+        p_list = []
 
-    if not lista_jogadores:
-        st.info("Buscando jogadores...")
+    if not p_list:
+        st.info("🔄 Sincronizando elenco da NBA...")
         st.stop()
 
-    jogador_sel = st.selectbox("Jogador", lista_jogadores, key="sb_player")
-    p_id = elenco[elenco['PLAYER'] == jogador_sel]['PLAYER_ID'].values[0]
-    time_adv = st.selectbox("Adversário (Defesa)", sorted(dict_times.keys()), key="sb_adv")
+    sel_p = st.selectbox("Jogador", p_list, key="pp")
+    p_id = roster[roster['PLAYER'] == sel_p]['PLAYER_ID'].values[0]
+    t_adv = st.selectbox("Adversário (Defesa)", sorted(all_teams.keys()), key="ta")
 
-# --- BUSCA DE ESTATÍSTICAS ---
+# --- PROCESSAMENTO BLINDADO ---
 @st.cache_data(ttl=3600)
-def fetch_stats(pid):
+def fetch_all(pid):
     try:
-        # Busca temporada regular
         s_df = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(player_id=pid, per_mode_detailed='PerGame', season='2025-26').get_data_frames()[0]
-        if s_df.empty: return None
-        
-        # Busca últimos 5 jogos
         l5_df = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(player_id=pid, per_mode_detailed='PerGame', last_n_games=5, season='2025-26').get_data_frames()[0]
-        
+        if s_df.empty: return None
         return {
             's': s_df[['PTS', 'AST', 'REB']].iloc[0].to_dict(),
             'l5': l5_df[['PTS', 'AST', 'REB']].iloc[0].to_dict() if not l5_df.empty else s_df[['PTS', 'AST', 'REB']].iloc[0].to_dict()
         }
     except: return None
 
-data = fetch_stats(p_id)
+# Tenta buscar os dados
+data = fetch_all(p_id)
 
 if data:
-    # Mostra os cards de stats
-    c1, c2 = st.columns(2)
-    c1.metric("Temporada", f"{data['s']['PTS']:.1f} PTS")
-    c2.metric("Últimos 5", f"{data['l5']['PTS']:.1f} PTS")
+    st.session_state.data_ready = True
+    # Mostra médias reais (vistas na image_0f3b03.png)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("PTS", f"{data['s']['PTS']:.1f}")
+    c2.metric("AST", f"{data['s']['AST']:.1f}")
+    c3.metric("REB", f"{data['s']['REB']:.1f}")
 
     st.markdown("---")
-    user_val = st.number_input("Previsão de Pontos", value=float(data['s']['PTS']), step=0.5)
+    u_pts = st.number_input("Sua Previsão (PONTOS)", value=float(data['s']['PTS']), step=0.5)
 
-    if st.button("ANALISAR CONFRONTO"):
-        df_def = get_defense_data()
-        if not df_def.empty:
-            rank = df_def[df_def['TEAM_NAME'] == time_adv]['RANK'].values[0]
+    if st.button("ANALISAR AGORA"):
+        ranks = get_ranks()
+        if not ranks.empty:
+            r = ranks[ranks['TEAM_NAME'] == t_adv]['RANK'].values[0]
+            # Lógica de expectativa ajustada
+            base = (data['s']['PTS'] * 0.5) + (data['l5']['PTS'] * 0.5)
+            mod = (r - 15) * (0.02 if r >= 20 else 0.01)
+            expect = base * (1 + mod)
             
-            # Cálculo
-            base = (data['s']['PTS'] + data['l5']['PTS']) / 2
-            fator = (rank - 15) * (0.02 if rank >= 20 else 0.012)
-            expectativa = base * (1 + fator)
-            
-            if rank >= 25:
-                st.warning(f"🚨 Risco de Blowout (Rank {rank})")
-                expectativa *= 0.88
+            # Alerta de Blowout (Defesas Ranks 25-30)
+            if r >= 25:
+                st.warning(f"🚨 Risco de Blowout (Defesa Rank {r})")
+                expect *= 0.90
 
-            diff = (user_val - expectativa) / expectativa
-            if diff <= 0.10: st.success(f"✅ PROVÁVEL: {expectativa:.1f} PTS")
-            elif diff <= 0.25: st.warning(f"⚠️ INCERTO: {expectativa:.1f} PTS")
-            else: st.error(f"❌ IMPROVÁVEL: {expectativa:.1f} PTS")
-        else:
-            st.warning("Dados defensivos indisponíveis no momento.")
+            diff = (u_pts - expect) / expect
+            if diff <= 0.10: st.success(f"✅ PROVÁVEL: {expect:.1f} PTS")
+            elif diff <= 0.25: st.warning(f"⚠️ INCERTO: {expect:.1f} PTS")
+            else: st.error(f"❌ IMPROVÁVEL: {expect:.1f} PTS")
 else:
-    st.warning(f"Sincronizando dados de {jogador_sel}... Se persistir, o jogador pode estar sem jogos em 2026.")
+    st.session_state.data_ready = False
+    st.warning(f"⏳ Aguardando estatísticas estáveis para {sel_p}...")
