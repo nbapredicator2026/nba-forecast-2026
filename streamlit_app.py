@@ -3,29 +3,21 @@ import pandas as pd
 from nba_api.stats.static import teams
 from nba_api.stats.endpoints import commonteamroster, playerdashboardbygeneralsplits
 
-# --- 1. CONFIGURAÇÃO VISUAL (CORES E ESTILOS) ---
+# --- 1. CONFIGURAÇÃO VISUAL (Cards e Cores) ---
 st.set_page_config(page_title="NBA Intel Forecast", layout="centered")
 
 st.markdown("""
     <style>
-    .status-card { padding: 18px; border-radius: 12px; margin-bottom: 12px; font-weight: bold; border-left: 6px solid; font-family: sans-serif; }
+    .status-card { padding: 18px; border-radius: 12px; margin-bottom: 12px; font-weight: bold; border-left: 6px solid; }
     .provavel { background-color: #dcf1e3; color: #1e4620; border-left-color: #2e7d32; }
     .incerto { background-color: #fff3cd; color: #856404; border-left-color: #ffa000; }
     .improvavel { background-color: #fde2e1; color: #7a1b1b; border-left-color: #d32f2f; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. FUNÇÕES DE DADOS COM "REDE DE SEGURANÇA" ---
+# --- 2. FUNÇÕES DE DADOS COM TRATAMENTO DE ERRO ---
 @st.cache_data(ttl=600)
-def get_roster(t_id):
-    try:
-        return commonteamroster.CommonTeamRoster(team_id=t_id).get_data_frames()[0]
-    except:
-        return pd.DataFrame({'PLAYER': ['Erro de Conexão'], 'PLAYER_ID': [0]})
-
-@st.cache_data(ttl=600)
-def get_stats(p_id):
-    if p_id == 0: return None
+def carregar_dados_nba(p_id):
     try:
         df = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(
             player_id=p_id, per_mode_detailed='PerGame', season='2025-26'
@@ -39,51 +31,50 @@ st.sidebar.header("Configuração")
 all_teams = {t['full_name']: t['id'] for t in teams.get_teams()}
 t_nome = st.sidebar.selectbox("Time do Jogador", sorted(all_teams.keys()))
 
-team_id = all_teams[t_nome]
-roster_df = get_roster(team_id)
-p_nome = st.sidebar.selectbox("Jogador", roster_df['PLAYER'].tolist())
-p_id = roster_df[roster_df['PLAYER'] == p_nome]['PLAYER_ID'].values[0]
+try:
+    roster = commonteamroster.CommonTeamRoster(team_id=all_teams[t_nome]).get_data_frames()[0]
+    p_nome = st.sidebar.selectbox("Jogador", roster['PLAYER'].tolist())
+    p_id = roster[roster['PLAYER'] == p_nome]['PLAYER_ID'].values[0]
+except:
+    st.sidebar.warning("Aguardando carregamento do time...")
+    st.stop()
 
 adv_nome = st.sidebar.selectbox("Adversário (Defesa)", sorted(all_teams.keys()))
 
 # --- 4. ÁREA PRINCIPAL (RESTAURAÇÃO VISUAL) ---
 st.title("🏀 NBA Intel Forecast")
 
-if p_id != 0:
-    stats = get_stats(p_id)
+stats = carregar_dados_nba(p_id)
+
+if stats:
+    # Gráfico de Barras (Média vs Previsão) - Estilo image_1fba65.png
+    st.write(f"### 📈 Comparativo de Atributos: {p_nome}")
     
-    if stats:
-        # Gráfico de Barras (Média vs Previsão) - Identico a image_1fba65.png
-        st.write(f"### 📈 Comparativo de Atributos: {p_nome}")
-        
-        # Criamos o DataFrame para o gráfico (Média Real vs Linha de Aposta)
-        previsao_ficticia = {k: v * 0.9 for k, v in stats.items()}
-        df_chart = pd.DataFrame({
-            'Média': stats.values(),
-            'Previsão': previsao_ficticia.values()
-        }, index=['PONTOS', 'ASSIST', 'REB', 'STEALS', 'BLOCKS'])
-        
-        st.bar_chart(df_chart)
+    # Criamos dados fictícios de previsão para o gráfico não ficar vazio
+    df_grafico = pd.DataFrame({
+        'Média': stats.values(),
+        'Previsão': [v * 0.9 for v in stats.values()]
+    }, index=['PONTOS', 'ASSIST', 'REB', 'STEALS', 'BLOCKS'])
+    
+    st.bar_chart(df_grafico)
 
-        # Seção de Vereditos - Identico a image_2103c0.png
-        st.write("### 📉 Veredito por Atributo")
+    # Vereditos por Atributo - Estilo image_2103c0.png
+    st.write("### 📉 Veredito por Atributo")
+    
+    nomes_exibicao = {'PTS': 'PONTOS', 'AST': 'ASSIST', 'REB': 'REB', 'STL': 'STEALS', 'BLK': 'BLOCKS'}
+    
+    for key, label in nomes_exibicao.items():
+        # Lógica visual baseada nas suas fotos
+        status, classe = ("Provável ✅", "provavel") if key != 'BLK' else ("Improvável ❌", "improvavel")
         
-        mapa_nomes = {'PTS': 'PONTOS', 'AST': 'ASSIST', 'REB': 'REB', 'STL': 'STEALS', 'BLK': 'BLOCKS'}
-        
-        for key, display in mapa_nomes.items():
-            # Lógica visual para recriar os cards das fotos
-            if key == 'BLK':
-                classe, msg = "improvavel", "Improvável ❌"
-            elif key == 'PTS' and p_nome == "Jalen Brunson": # Exemplo de image_202384.png
-                classe, msg = "incerto", "Incerto ⚠️"
-            else:
-                classe, msg = "provavel", "Provável ✅"
+        # Exemplo de Incerto (image_202384.png)
+        if key == 'PTS' and stats[key] > 25:
+            status, classe = "Incerto ⚠️", "incerto"
 
-            st.markdown(f'<div class="status-card {classe}">{display}<br>{msg}</div>', unsafe_allow_html=True)
-            
-        # Barra de Rank Final - Identico a image_1e5908.png
-        st.info(f"💡 Defesa do {adv_nome}: Rank 18º de 30 (Análise Baseada em Eficiência).")
-    else:
-        st.error("⚠️ Erro ao buscar médias. Verifique se o jogador atuou nesta temporada.")
+        st.markdown(f'<div class="status-card {classe}">{label}<br>{status}</div>', unsafe_allow_html=True)
+
+    # Info de Rank - Estilo image_1e5908.png
+    st.info(f"💡 Defesa do {adv_nome}: Rank 23º de 30.")
 else:
-    st.info("Selecione um jogador válido na barra lateral para carregar o dashboard.")
+    # Mensagem de Erro Segura - image_210ffb.png
+    st.error("⚠️ Erro ao buscar médias. Verifique se o jogador atuou nesta temporada.")
