@@ -1,14 +1,14 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px  # ESSENCIAL PARA O GRÁFICO DE DESEMPENHO
+import plotly.express as px
 from nba_api.stats.static import teams
 from nba_api.stats.endpoints import (commonteamroster, leaguedashteamstats, 
                                      playerdashboardbygeneralsplits, playergamelog)
 
-# --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="NBA Intel Elite v12", page_icon="📈", layout="centered")
+# --- 1. CONFIGURAÇÃO ---
+st.set_page_config(page_title="NBA Intel Elite v13", page_icon="🏀", layout="centered")
 
-# Estilo dos Cards de Veredito (baseado em suas imagens)
+# Estilos dos Cards das suas imagens
 st.markdown("""
     <style>
     .stMetric { background-color: #ffffff; border: 1px solid #e1e4e8; padding: 15px; border-radius: 12px; }
@@ -29,78 +29,76 @@ def carregar_liga():
     except: return all_teams, pd.DataFrame()
 
 @st.cache_data(ttl=3600)
-def obter_dados_completos(p_id):
+def obter_intelecto(p_id):
     try:
-        # Médias da Temporada
+        # Médias e histórico de jogos
         base = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(player_id=p_id, per_mode_detailed='PerGame', season='2025-26').get_data_frames()[0]
-        # HISTÓRICO REAL PARA O GRÁFICO DE DESEMPENHO
         log = playergamelog.PlayerGameLog(player_id=p_id, season='2025-26').get_data_frames()[0]
-        trend_data = log[['GAME_DATE', 'PTS']].head(10)[::-1] # Últimos 10 jogos
+        # Pegamos os últimos 10 jogos para o gráfico de linha
+        trend = log[['GAME_DATE', 'PTS']].head(10)[::-1]
         
         return {
             'medias': base[['PTS', 'AST', 'REB', 'STL', 'BLK']].iloc[0].to_dict(),
-            'historico': trend_data
+            'trend': trend
         }
     except: return None
 
-# --- SIDEBAR ---
-dict_times, db_liga = carregar_liga()
+# --- 2. SIDEBAR ---
+times, db_liga = carregar_liga()
 with st.sidebar:
-    st.header("⚙️ Configuração")
-    t_nome = st.selectbox("Time do Jogador", sorted(dict_times.keys()))
+    st.header("Configuração")
+    t_sel = st.selectbox("Time", sorted(times.keys()))
     try:
-        elenco = commonteamroster.CommonTeamRoster(team_id=dict_times[t_nome], season='2025-26').get_data_frames()[0]
-        j_nome = st.selectbox("Jogador", elenco['PLAYER'].tolist())
-        j_id = elenco[elenco['PLAYER'] == j_nome]['PLAYER_ID'].values[0]
+        roster = commonteamroster.CommonTeamRoster(team_id=times[t_sel], season='2025-26').get_data_frames()[0]
+        p_sel = st.selectbox("Jogador", roster['PLAYER'].tolist())
+        p_id = roster[roster['PLAYER'] == p_sel]['PLAYER_ID'].values[0]
     except: st.stop()
-    adv_nome = st.selectbox("Adversário", sorted(dict_times.keys()))
+    adv_sel = st.selectbox("Adversário", sorted(times.keys()))
 
-# --- DASHBOARD PRINCIPAL ---
-intel = obter_dados_completos(j_id)
+# --- 3. DASHBOARD ---
+dados = obter_intelecto(p_id)
 
-if intel:
-    st.subheader(f"📊 Real: {j_nome}")
+if dados:
+    st.subheader(f"📊 Desempenho Real: {p_sel}")
     c1, c2, c3 = st.columns(3)
-    c1.metric("PTS", f"{intel['medias']['PTS']:.1f}")
-    c2.metric("AST", f"{intel['medias']['AST']:.1f}")
-    c3.metric("REB", f"{intel['medias']['REB']:.1f}")
+    c1.metric("Média PTS", f"{dados['medias']['PTS']:.1f}")
+    c2.metric("Média AST", f"{dados['medias']['AST']:.1f}")
+    c3.metric("Média REB", f"{dados['medias']['REB']:.1f}")
 
-    # --- AQUI ESTÁ O GRÁFICO DE DESEMPENHO ---
+    # --- NOVO: GRÁFICO DE DESEMPENHO (LINHA) ---
     st.markdown("---")
-    st.write(f"**📈 Gráfico de Desempenho: Pontos nos Últimos Jogos**")
+    st.write(f"**📈 Tendência de Pontos (Últimos 10 Jogos)**")
     
-    # Criando o gráfico de linha (Tendência)
-    fig = px.line(intel['historico'], x='GAME_DATE', y='PTS', markers=True, 
-                 color_discrete_sequence=['#007bff'], template="plotly_white")
-    
-    fig.update_layout(
-        height=300, 
-        margin=dict(l=0, r=0, t=10, b=0),
-        xaxis_title="Data do Jogo",
-        yaxis_title="Pontos Marcados"
-    )
-    
-    # Exibe o gráfico no Streamlit
-    st.plotly_chart(fig, use_container_width=True)
+    # Este é o gráfico que estava faltando
+    fig_linha = px.line(dados['trend'], x='GAME_DATE', y='PTS', markers=True, 
+                       color_discrete_sequence=['#007bff'])
+    fig_linha.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor='rgba(0,0,0,0)')
+    st.plotly_chart(fig_linha, use_container_width=True)
 
-    # --- SEÇÃO DE PREVISÃO E VEREDITO ---
+    # --- SEÇÃO DE COMPARATIVO E VEREDITO ---
     st.markdown("---")
-    st.subheader(f"🔮 Veredito vs {adv_nome}")
-    p_user = st.number_input("Sua Linha de Pontos", value=float(intel['medias']['PTS']), step=0.5)
+    st.subheader("🔮 Previsão e Análise")
+    p_pts = st.number_input("Sua Linha de Pontos", value=float(dados['medias']['PTS']), step=0.5)
 
     if st.button("ANALISAR AGORA", use_container_width=True):
-        info_adv = db_liga[db_liga['TEAM_NAME'] == adv_nome].iloc[0]
-        rank = info_adv['DEF_RANK']
+        adv_info = db_liga[db_liga['TEAM_NAME'] == adv_sel].iloc[0]
         
-        # Lógica de Veredito Profissional
-        expectativa = intel['medias']['PTS'] * (1 + (rank - 15) * 0.01)
-        eh_provavel = p_user <= expectativa * 1.1
+        # Gráfico Comparativo (Igual às suas imagens)
+        df_comp = pd.DataFrame({
+            'Categoria': ['PONTOS'],
+            'Média': [dados['medias']['PTS']],
+            'Previsão': [p_pts]
+        }).set_index('Categoria')
         
-        classe = "provavel" if eh_provavel else "improvavel"
-        status = "Provável ✅" if eh_provavel else "Improvável ❌"
+        st.bar_chart(df_comp)
+
+        # Veredito Final
+        st.subheader("📋 Veredito por Atributo")
+        expectativa = dados['medias']['PTS'] * (1 + (adv_info['DEF_RANK'] - 15) * 0.01)
+        status = "Provável ✅" if p_pts <= expectativa * 1.1 else "Improvável ❌"
+        classe = "provavel" if p_pts <= expectativa * 1.1 else "improvavel"
         
         st.markdown(f"""<div class="status-card {classe}">PONTOS: {status}</div>""", unsafe_allow_html=True)
-        st.info(f"💡 Dica: A defesa do {adv_nome} é Rank {rank} de 30.")
-
+        st.info(f"💡 Defesa do {adv_sel}: Rank {adv_info['DEF_RANK']} de 30.")
 else:
-    st.warning("Carregando histórico de desempenho...")
+    st.warning("Buscando dados históricos...")
