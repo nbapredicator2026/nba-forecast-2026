@@ -1,26 +1,26 @@
 import streamlit as st
 import pandas as pd
 from nba_api.stats.static import teams
-from nba_api.stats.endpoints import commonteamroster, leaguedashteamstats, playerdashboardbygeneralsplits, playergamelog
+from nba_api.stats.endpoints import commonteamroster, leaguedashteamstats, playerdashboardbygeneralsplits
 
-# --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="NBA Intel v3.8.5", page_icon="🏀", layout="centered")
+# --- CONFIGURAÇÃO INICIAL ---
+st.set_page_config(page_title="NBA Intel v3.9", page_icon="🏀", layout="centered")
 
-# Estilo para os cards de veredito
+# CSS para esconder erros nativos e estilizar cards
 st.markdown("""
     <style>
-    .stMetric { background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #1f77b4; }
-    .alert-box { padding: 20px; border-radius: 10px; margin-bottom: 10px; border: 1px solid #ddd; }
+    .stAlert { border-radius: 10px; }
+    .stMetric { background-color: #f8f9fb; padding: 15px; border-radius: 10px; border: 1px solid #e0e0e0; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- FUNÇÕES DE BUSCA ---
+# --- CACHE DE DADOS (EFICIÊNCIA) ---
 @st.cache_data(ttl=86400)
-def get_all_teams():
+def get_teams_list():
     return {t['full_name']: t['id'] for t in teams.get_teams()}
 
 @st.cache_data(ttl=3600)
-def get_defense_rank():
+def get_defense_rankings():
     try:
         df = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense='Defense', season='2025-26').get_data_frames()[0]
         df = df[['TEAM_NAME', 'DEF_RATING']].sort_values('DEF_RATING')
@@ -29,78 +29,85 @@ def get_defense_rank():
     except:
         return pd.DataFrame({'TEAM_NAME': [t['full_name'] for t in teams.get_teams()], 'RANK': [15]*30})
 
-@st.cache_data(ttl=3600)
-def get_player_stats(p_id):
-    try:
-        # Busca Temporada Atual
-        df_s = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(player_id=p_id, per_mode_detailed='PerGame', season='2025-26').get_data_frames()[0]
-        if df_s.empty: return None, None
-        s_stats = df_s[['PTS', 'AST', 'REB']].iloc[0].to_dict()
-        
-        # Busca Últimos 5 Jogos
-        df_l5 = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(player_id=p_id, per_mode_detailed='PerGame', last_n_games=5, season='2025-26').get_data_frames()[0]
-        l5_stats = df_l5[['PTS', 'AST', 'REB']].iloc[0].to_dict() if not df_l5.empty else s_stats
-        return s_stats, l5_stats
-    except: return None, None
-
-# --- INTERFACE ---
+# --- INTERFACE LATERAL ---
 st.title("🏀 NBA Intel Forecast")
-
-teams_dict = get_all_teams()
+all_teams = get_teams_list()
 
 with st.sidebar:
     st.header("Configuração")
-    sel_team = st.selectbox("Time do Jogador", sorted(teams_dict.keys()))
+    # Uso de chaves (keys) únicas para evitar conflitos de sessão
+    team_player = st.selectbox("Time do Jogador", sorted(all_teams.keys()), key="team_p")
     
-    # Carregamento seguro do elenco
+    # Carregamento do elenco com tratamento de erro silencioso
     try:
-        roster = commonteamroster.CommonTeamRoster(team_id=teams_dict[sel_team], season='2025-26').get_data_frames()[0]
-        sel_player = st.selectbox("Jogador", roster['PLAYER'].tolist())
-        p_id = roster[roster['PLAYER'] == sel_player]['PLAYER_ID'].values[0]
+        roster_df = commonteamroster.CommonTeamRoster(team_id=all_teams[team_player], season='2025-26').get_data_frames()[0]
+        player_list = roster_df['PLAYER'].tolist()
     except:
-        st.error("Erro ao carregar dados do time. Tente novamente.")
+        player_list = []
+
+    if not player_list:
+        st.error("Conectando à API da NBA...")
         st.stop()
+
+    selected_player = st.selectbox("Jogador", player_list, key="player_p")
+    p_id = roster_df[roster_df['PLAYER'] == selected_player]['PLAYER_ID'].values[0]
+    
+    team_adv = st.selectbox("Adversário (Defesa)", sorted(all_teams.keys()), key="team_a")
+
+# --- LÓGICA DE CARREGAMENTO SEGURO ---
+# O segredo da v3.9: Verificar dados antes de qualquer tentativa de renderização
+@st.cache_data(ttl=3600)
+def fetch_secure_stats(player_id):
+    try:
+        # Busca temporada
+        s_df = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(player_id=player_id, per_mode_detailed='PerGame', season='2025-26').get_data_frames()[0]
+        if s_df.empty: return None
         
-    sel_adv = st.selectbox("Adversário (Defesa)", sorted(teams_dict.keys()))
+        # Busca L5
+        l5_df = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(player_id=player_id, per_mode_detailed='PerGame', last_n_games=5, season='2025-26').get_data_frames()[0]
+        
+        stats = {
+            'season': s_df[['PTS', 'AST', 'REB']].iloc[0].to_dict(),
+            'l5': l5_df[['PTS', 'AST', 'REB']].iloc[0].to_dict() if not l5_df.empty else s_df[['PTS', 'AST', 'REB']].iloc[0].to_dict()
+        }
+        return stats
+    except:
+        return None
 
-# BLOCO DE SEGURANÇA: Só avança se a API responder
-s_stats, l5_stats = get_player_stats(p_id)
+# Execução da busca
+with st.spinner(f"Sincronizando dados de {selected_player}..."):
+    player_data = fetch_secure_stats(p_id)
 
-if s_stats is None:
-    st.warning(f"Sincronizando estatísticas de 2026 para {sel_player}... Por favor, aguarde.")
-    st.info("Se este aviso persistir, o jogador pode não ter entrado em quadra nesta temporada ainda.")
+if player_data is None:
+    st.warning(f"⚠️ Aguardando dados de 2026 para {selected_player}. Se o jogador ainda não estreou na temporada, tente outro atleta.")
 else:
-    # Mostra Métricas
-    c1, c2 = st.columns(2)
-    c1.metric("Média 25-26", f"{s_stats['PTS']:.1f} PTS")
-    c2.metric("Últimos 5 Jogos", f"{l5_stats['PTS']:.1f} PTS")
+    # --- RENDERIZAÇÃO DA INTERFACE (SÓ ACONTECE SE HOUVER DADOS) ---
+    s = player_data['season']
+    l5 = player_data['l5']
+    
+    col1, col2 = st.columns(2)
+    col1.metric("Média Temporada", f"{s['PTS']:.1f} PTS")
+    col2.metric("Últimos 5 Jogos", f"{l5['PTS']:.1f} PTS", delta=f"{l5['PTS'] - s['PTS']:.1f}")
 
     st.markdown("---")
-    u_val = st.number_input("Previsão de PONTOS", value=float(s_stats['PTS']), step=0.5)
+    user_val = st.number_input("Sua Previsão (PONTOS)", value=float(s['PTS']), step=0.5)
 
     if st.button("ANALISAR AGORA"):
-        df_def = get_defense_rank()
-        rank = df_def[df_def['TEAM_NAME'] == sel_adv]['RANK'].values[0]
+        def_df = get_defense_rankings()
+        rank = def_df[def_df['TEAM_NAME'] == team_adv]['RANK'].values[0]
         
-        # Cálculo Ponderado com Bônus Agressivo
-        base = (s_stats['PTS'] + l5_stats['PTS']) / 2
-        fator = (rank - 15) * (0.020 if rank >= 20 else 0.012)
-        expectativa = base * (1 + fator)
+        # Cálculo de Expectativa
+        base = (s['PTS'] + l5['PTS']) / 2
+        bonus = (rank - 15) * (0.02 if rank >= 20 else 0.012)
+        expectativa = base * (1 + bonus)
         
         # Alerta de Blowout
         if rank >= 25:
-            st.error(f"⚠️ **Risco de Blowout:** A defesa do {sel_adv} é muito fraca (Rank {rank}).")
+            st.error(f"🚨 Risco de Blowout: Defesa do {team_adv} é muito fraca (Rank {rank}).")
             expectativa *= 0.88
 
-        # Veredito Final
-        diff = (u_val - expectativa) / expectativa
-        if diff <= 0.10: cor, txt, icon = "#D4EDDA", "PROVÁVEL", "✅"
-        elif diff <= 0.25: cor, txt, icon = "#FFF3CD", "INCERTO", "⚠️"
-        else: cor, txt, icon = "#F8D7DA", "IMPROVÁVEL", "❌"
-
-        st.markdown(f"""
-            <div class="alert-box" style="background-color:{cor};">
-                <h3 style="margin:0;">{icon} {txt}</h3>
-                <p style="margin:0;">Expectativa calculada: <b>{expectativa:.1f} pontos</b>.</p>
-            </div>
-            """, unsafe_allow_html=True)
+        # Veredito
+        diff = (user_val - expectativa) / expectativa
+        if diff <= 0.10: st.success(f"✅ PROVÁVEL: Expectativa de {expectativa:.1f} PTS")
+        elif diff <= 0.25: st.warning(f"⚠️ INCERTO: Expectativa de {expectativa:.1f} PTS")
+        else: st.error(f"❌ IMPROVÁVEL: Expectativa de {expectativa:.1f} PTS")
