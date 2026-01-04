@@ -1,147 +1,107 @@
 import streamlit as st
 import pandas as pd
-from nba_api.stats.static import teams
-from nba_api.stats.endpoints import (commonteamroster, playerdashboardbygeneralsplits, playergamelog)
+import numpy as np
+import time
 
 # ==============================================================================
-# CONFIGURAÇÃO INICIAL E CABEÇALHOS (ANTI-BLOQUEIO)
+# CONFIGURAÇÃO
 # ==============================================================================
-st.set_page_config(page_title="NBA Intel Forecast", layout="centered")
+st.set_page_config(page_title="NBA Intel Forecast (Modo Offline)", layout="centered")
 
-# Headers para evitar timeout da NBA (Simula um navegador real)
-custom_headers = {
-    'Host': 'stats.nba.com',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-}
-
-# CSS Visual
 st.markdown("""
     <style>
-    .stMetric { background-color: #f9f9f9; border: 1px solid #ddd; padding: 10px; border-radius: 10px; }
-    .status-card { padding: 15px; border-radius: 10px; margin-bottom: 10px; font-weight: bold; border-left: 5px solid; }
-    .provavel { background-color: #d4edda; color: #155724; border-left-color: #28a745; }
-    .improvavel { background-color: #f8d7da; color: #721c24; border-left-color: #dc3545; }
+    .stMetric { background-color: #f0f2f6; border-radius: 10px; padding: 10px; }
+    .status-card { padding: 15px; border-radius: 10px; margin-bottom: 10px; font-weight: bold; color: white; }
+    .provavel { background-color: #28a745; }
+    .improvavel { background-color: #dc3545; }
     </style>
     """, unsafe_allow_html=True)
 
-# Tente usar a temporada anterior se a atual estiver vazia ou instável
-TEMPORADA_ATUAL = '2024-25' 
-
 # ==============================================================================
-# FUNÇÕES DE DADOS COM FEEDBACK
+# SIMULAÇÃO DE DADOS (Substitui a API travada)
 # ==============================================================================
-@st.cache_data(ttl=3600)
-def get_roster(team_id):
-    """Busca o elenco do time com tratamento de erro."""
-    try:
-        # Passando headers (embora a lib gerencie, às vezes ajuda forçar via request se necessário, 
-        # mas aqui vamos confiar no try/except padrão da lib com timeout implícito do Streamlit)
-        roster = commonteamroster.CommonTeamRoster(
-            team_id=team_id, 
-            season=TEMPORADA_ATUAL
-        ).get_data_frames()[0]
-        return roster
-    except Exception as e:
-        return None
-
-@st.cache_data(ttl=3600)
-def get_player_stats(p_id):
-    """Busca stats do jogador."""
-    try:
-        # 1. Stats Gerais
-        base = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(
-            player_id=p_id, 
-            per_mode_detailed='PerGame', 
-            season=TEMPORADA_ATUAL
-        ).get_data_frames()[0]
-
-        if base.empty: return None
-
-        # 2. Game Log (Últimos jogos)
-        log = playergamelog.PlayerGameLog(
-            player_id=p_id, 
-            season=TEMPORADA_ATUAL
-        ).get_data_frames()[0]
-        
-        media_recente = log['PTS'].head(5).mean() if not log.empty else 0.0
-        
-        return {
-            'stats': base[['PTS', 'AST', 'REB']].iloc[0].to_dict(),
-            'fase': media_recente
-        }
-    except Exception:
-        return None
+def gerar_dados_ficticios(jogador):
+    """Gera dados falsos apenas para testar a interface"""
+    # Simula um tempo de carregamento para parecer real
+    time.sleep(0.5) 
+    
+    # Cria números aleatórios baseados no nome para serem sempre iguais para o mesmo jogador
+    np.random.seed(len(jogador)) 
+    
+    pts_media = np.random.randint(15, 30) + np.random.random()
+    pts_fase = pts_media + np.random.randint(-5, 6) # Fase varia um pouco da média
+    
+    return {
+        'stats': {
+            'PTS': pts_media,
+            'AST': np.random.randint(4, 10),
+            'REB': np.random.randint(2, 8)
+        },
+        'fase': pts_fase
+    }
 
 # ==============================================================================
 # INTERFACE
 # ==============================================================================
 st.title("🏀 NBA Intel Forecast")
+st.warning("⚠️ MODO DE TESTE: Usando dados simulados (API Desligada)")
 
-# --- DEBUG: Verifica se o código chegou até aqui ---
-st.write("🔄 Inicializando sistema...")
+# --- SIDEBAR ---
+st.sidebar.header("Configuração")
+# Listas fixas para não depender da internet
+times = ["Lakers", "Warriors", "Celtics", "Bulls", "Heat"]
+jogadores = {
+    "Lakers": ["LeBron James", "Anthony Davis"],
+    "Warriors": ["Stephen Curry", "Klay Thompson"],
+    "Celtics": ["Jayson Tatum", "Jaylen Brown"],
+    "Bulls": ["DeMar DeRozan", "Zach LaVine"],
+    "Heat": ["Jimmy Butler", "Bam Adebayo"]
+}
 
-# 1. Carregar Times
-try:
-    nba_teams = teams.get_teams()
-    all_teams = {t['full_name']: t['id'] for t in nba_teams}
-    st.sidebar.header("Configuração")
-    t_nome = st.sidebar.selectbox("Escolha o Time", sorted(all_teams.keys()))
-except Exception as e:
-    st.error(f"Erro ao carregar lista de times. Verifique sua internet. Erro: {e}")
-    st.stop()
+t_nome = st.sidebar.selectbox("Time", times)
+p_nome = st.sidebar.selectbox("Jogador", jogadores[t_nome])
+adv_nome = st.sidebar.selectbox("Adversário", [t for t in times if t != t_nome])
 
-# 2. Carregar Elenco (Ponto Crítico de Travamento)
-if t_nome:
-    with st.spinner(f"Baixando elenco do {t_nome}..."):
-        roster_df = get_roster(all_teams[t_nome])
-        
-    if roster_df is not None and not roster_df.empty:
-        p_nome = st.sidebar.selectbox("Escolha o Jogador", roster_df['PLAYER'].tolist())
-        p_id = roster_df[roster_df['PLAYER'] == p_nome]['PLAYER_ID'].values[0]
-    else:
-        st.sidebar.error("Elenco não encontrado ou API bloqueou a conexão.")
-        st.stop()
+# --- DASHBOARD ---
+st.subheader(f"Análise: {p_nome}")
 
-# 3. Carregar Dados do Jogador
-if 'p_id' in locals():
-    st.subheader(f"Análise: {p_nome}")
+# Gerar dados
+data = gerar_dados_ficticios(p_nome)
+
+# Exibir Métricas
+diff = data['fase'] - data['stats']['PTS']
+col1, col2, col3 = st.columns(3)
+col1.metric("Média Pontos", f"{data['stats']['PTS']:.1f}", delta=f"{diff:+.1f} Fase Recente")
+col2.metric("Assistências", f"{data['stats']['AST']}")
+col3.metric("Rebotes", f"{data['stats']['REB']}")
+
+st.divider()
+
+# Área de Aposta
+previsao = st.number_input("Sua Linha (Pontos)", value=float(int(data['stats']['PTS'])))
+
+if st.button("ANALISAR AGORA", use_container_width=True):
     
-    with st.spinner("Analisando estatísticas..."):
-        data = get_player_stats(p_id)
+    # 1. Gráfico
+    st.write("#### Comparativo de Performance")
+    df_viz = pd.DataFrame({
+        'Métrica': ['Média Temp.', 'Sua Linha', 'Fase (L5)'],
+        'Pontos': [data['stats']['PTS'], previsao, data['fase']]
+    }).set_index('Métrica')
+    
+    st.bar_chart(df_viz, color=["#FF4B4B"])
 
-    if data:
-        # Exibe Interface
-        diff = data['fase'] - data['stats']['PTS']
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Média Pontos", f"{data['stats']['PTS']:.1f}", delta=f"{diff:+.1f} Fase Recente")
-        c2.metric("Assistências", f"{data['stats']['AST']:.1f}")
-        c3.metric("Rebotes", f"{data['stats']['REB']:.1f}")
-
-        st.divider()
-        
-        # Área de Aposta
-        previsao = st.number_input("Linha da Aposta (Pontos)", value=float(data['stats']['PTS']))
-        
-        if st.button("GERAR VEREDITO", use_container_width=True):
-            # Gráfico
-            df_viz = pd.DataFrame({
-                'Métrica': ['Média Temp.', 'Sua Linha', 'Fase (L5)'],
-                'Pontos': [data['stats']['PTS'], previsao, data['fase']]
-            }).set_index('Métrica')
-            
-            st.bar_chart(df_viz, color=["#FF4B4B"])
-
-            # Veredito
-            is_prov = previsao <= (data['stats']['PTS'] * 1.1)
-            classe = "provavel" if is_prov else "improvavel"
-            msg = "Provável (OVER) ✅" if is_prov else "Arriscado (UNDER) ❌"
-            
-            st.markdown(f'<div class="status-card {classe}">{msg}</div>', unsafe_allow_html=True)
-            
-    else:
-        st.warning(f"Sem dados para {p_nome} nesta temporada ({TEMPORADA_ATUAL}).")
+    # 2. Veredito
+    margem = data['stats']['PTS'] * 1.1
+    is_prov = previsao <= margem
+    
+    classe = "provavel" if is_prov else "improvavel"
+    txt = "Provável (OVER) ✅" if is_prov else "Arriscado (UNDER) ❌"
+    msg = "Tendência favorável baseada nos últimos jogos." if is_prov else "Linha muito alta para a fase atual."
+    
+    st.markdown(f"""
+        <div class="status-card {classe}">
+            {txt}<br>
+            <span style='font-weight:normal; font-size:14px'>{msg}</span>
+        </div>
+    """, unsafe_allow_html=True)
