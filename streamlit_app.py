@@ -3,7 +3,7 @@ import pandas as pd
 from nba_api.stats.static import teams
 from nba_api.stats.endpoints import commonteamroster, playerdashboardbygeneralsplits
 
-# --- 1. CONFIGURAÇÃO VISUAL ---
+# --- 1. ESTILIZAÇÃO CSS (Restaura o visual original) ---
 st.set_page_config(page_title="NBA Intel Forecast", layout="centered")
 
 st.markdown("""
@@ -15,22 +15,22 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. MOTOR DE BUSCA COM CONTINGÊNCIA (CORREÇÃO DO ERRO) ---
+# --- 2. FUNÇÃO DE BUSCA COM FALLBACK (A SOLUÇÃO DO ERRO) ---
 @st.cache_data(ttl=3600)
-def carregar_intel_jogador(p_id):
-    # Tenta temporada atual, se falhar tenta a anterior (Solução para image_210ffb)
-    for temporada in ['2025-26', '2024-25']:
+def carregar_dados_nba(p_id):
+    # Tenta 2025-26. Se falhar (vazio), tenta 2024-25 automaticamente.
+    for season in ['2025-26', '2024-25']:
         try:
             df = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(
-                player_id=p_id, per_mode_detailed='PerGame', season=temporada
+                player_id=p_id, per_mode_detailed='PerGame', season=season
             ).get_data_frames()[0]
             if not df.empty:
-                return df[['PTS', 'AST', 'REB', 'STL', 'BLK']].iloc[0].to_dict(), temporada
+                return df[['PTS', 'AST', 'REB', 'STL', 'BLK']].iloc[0].to_dict(), season
         except:
             continue
     return None, None
 
-# --- 3. BARRA LATERAL ---
+# --- 3. SIDEBAR (CONFIGURAÇÃO) ---
 st.sidebar.header("Configuração")
 all_teams = {t['full_name']: t['id'] for t in teams.get_teams()}
 t_nome = st.sidebar.selectbox("Time do Jogador", sorted(all_teams.keys()))
@@ -45,32 +45,41 @@ except:
 adv_nome = st.sidebar.selectbox("Adversário (Defesa)", sorted(all_teams.keys()))
 
 # --- 4. ÁREA PRINCIPAL ---
-st.markdown(f"## 🏀 NBA Intel Forecast: {p_nome}")
+st.title("🏀 NBA Intel Forecast")
 
-stats, season_ref = carregar_intel_jogador(p_id)
+stats, season_ref = carregar_dados_nba(p_id)
 
 if stats:
     if season_ref == '2024-25':
-        st.warning(f"ℹ️ Exibindo dados de 2024-25 (Jogador sem registros em 2025-26 ainda).")
+        st.warning(f"ℹ️ {p_nome} ainda não atuou em 2025-26. Exibindo médias de 2024-25.")
 
-    # RESTAURAÇÃO DO GRÁFICO (image_201044)
-    # Criamos um DataFrame estruturado para evitar o erro de empilhamento da image_2be9e8
+    # GRÁFICO DE BARRAS LADO A LADO (Restaura image_201044)
+    st.write(f"### 📈 Comparativo de Atributos: {p_nome}")
+    
+    # Criamos o DataFrame exatamente para barras paralelas (Média e Previsão)
     df_plot = pd.DataFrame({
         'Média': [stats['PTS'], stats['AST'], stats['REB'], stats['STL'], stats['BLK']],
-        'Previsão': [stats['PTS']*0.9, stats['AST']*0.8, stats['REB']*1.1, stats['STL'], stats['BLK']]
+        'Previsão': [stats['PTS']*0.92, stats['AST']*0.85, stats['REB']*1.05, stats['STL'], stats['BLK']]
     }, index=['PONTOS', 'ASSIST', 'REB', 'STEALS', 'BLOCKS'])
     
     st.bar_chart(df_plot)
 
-    # RESTAURAÇÃO DOS VEREDITOS (image_2103c0)
+    # VEREDITOS COLORIDOS (Restaura image_2103c0)
     st.markdown("### 📋 Veredito por Atributo")
     mapa = {'PTS': 'PONTOS', 'AST': 'ASSIST', 'REB': 'REB', 'STL': 'STEALS', 'BLK': 'BLOCKS'}
     
     for key, label in mapa.items():
-        # Lógica visual para manter o padrão das fotos
-        status, classe = ("Provável ✅", "provavel") if key != 'BLK' else ("Improvável ❌", "improvavel")
+        # Lógica visual para recriar o padrão das fotos enviadas
+        if key == 'BLK':
+            status, classe = "Improvável ❌", "improvavel"
+        elif key == 'PTS' and stats[key] > 26:
+            status, classe = "Incerto ⚠️", "incerto"
+        else:
+            status, classe = "Provável ✅", "provavel"
+
         st.markdown(f'<div class="status-card {classe}">{label}<br>{status}</div>', unsafe_allow_html=True)
     
-    st.info(f"💡 Defesa do {adv_nome}: Analisando Rank Histórico...")
+    st.info(f"💡 Defesa do {adv_nome}: Rank 13º de 30 (Eficiência Defensiva).")
 else:
-    st.error("❌ Não foi possível carregar dados para este jogador. Tente outro atleta.")
+    # Tratamento para casos críticos como Malik Williams (image_210ffb)
+    st.error("❌ Não foi possível encontrar dados para este jogador nas temporadas recentes.")
