@@ -3,98 +3,110 @@ import pandas as pd
 from nba_api.stats.static import teams
 from nba_api.stats.endpoints import commonteamroster, leaguedashteamstats, playerdashboardbygeneralsplits
 
-# --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="NBA Intel Pro v5.0", page_icon="🏀", layout="centered")
+# --- CONFIGURAÇÃO ULTRA-LEVE ---
+st.set_page_config(page_title="NBA Intel Turbo", page_icon="⚡", layout="centered")
 
-# CSS para esconder erros nativos e polir a interface
-st.markdown("<style>.stError, .stException {display: none;} .stMetric {border: 1px solid #eee; padding: 10px; border-radius: 8px;}</style>", unsafe_allow_html=True)
+# CSS para esconder erros e otimizar mobile
+st.markdown("""
+    <style>
+    .stMetric { background-color: #f8f9fb; border-radius: 12px; padding: 10px; border: 1px solid #eef0f2; }
+    .stAlert { border-radius: 12px; }
+    div[data-testid="stMetricValue"] { font-size: 1.8rem; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# --- INICIALIZAÇÃO DE ESTADO (O SEGREDO DA ESTABILIDADE) ---
-if 'data_ready' not in st.session_state:
-    st.session_state.data_ready = False
-
-# --- FUNÇÕES NATIVAS ---
+# --- CAMADA 1: CACHE DE DADOS (SERVIDOR) ---
 @st.cache_data(ttl=86400)
-def load_teams():
-    return {t['full_name']: t['id'] for t in teams.get_teams()}
-
-@st.cache_data(ttl=3600)
-def get_ranks():
+def get_base_data():
+    """Carrega times e estatísticas avançadas da liga de uma vez só."""
+    all_teams = {t['full_name']: t['id'] for t in teams.get_teams()}
     try:
-        df = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense='Defense', season='2025-26').get_data_frames()[0]
-        df = df[['TEAM_NAME', 'DEF_RATING']].sort_values('DEF_RATING')
-        df['RANK'] = range(1, 31)
-        return df
-    except: return pd.DataFrame()
-
-# --- SIDEBAR COM VALIDAÇÃO ---
-st.title("🏀 NBA Intel Forecast")
-all_teams = load_teams()
-
-with st.sidebar:
-    st.header("Configuração")
-    t_player = st.selectbox("Time do Jogador", sorted(all_teams.keys()), key="tp")
-    
-    # Carregamento seguro de elenco
-    try:
-        roster = commonteamroster.CommonTeamRoster(team_id=all_teams[t_player], season='2025-26').get_data_frames()[0]
-        p_list = roster['PLAYER'].tolist()
+        # Busca estatísticas de ritmo (Pace) e defesa
+        league_stats = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense='Advanced', season='2025-26').get_data_frames()[0]
+        league_stats = league_stats[['TEAM_NAME', 'PACE', 'DEF_RATING']].sort_values('DEF_RATING')
+        league_stats['DEF_RANK'] = range(1, 31)
+        return all_teams, league_stats
     except:
-        p_list = []
+        return all_teams, pd.DataFrame()
 
-    if not p_list:
-        st.info("🔄 Sincronizando elenco da NBA...")
-        st.stop()
-
-    sel_p = st.selectbox("Jogador", p_list, key="pp")
-    p_id = roster[roster['PLAYER'] == sel_p]['PLAYER_ID'].values[0]
-    t_adv = st.selectbox("Adversário (Defesa)", sorted(all_teams.keys()), key="ta")
-
-# --- PROCESSAMENTO BLINDADO ---
+# --- CAMADA 2: PROCESSAMENTO ANALÍTICO ---
 @st.cache_data(ttl=3600)
-def fetch_all(pid):
+def analyze_player_pro(p_id):
+    """Calcula Usage Rate e tendências sem pesar no celular."""
     try:
-        s_df = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(player_id=pid, per_mode_detailed='PerGame', season='2025-26').get_data_frames()[0]
-        l5_df = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(player_id=pid, per_mode_detailed='PerGame', last_n_games=5, season='2025-26').get_data_frames()[0]
-        if s_df.empty: return None
+        # Busca dados avançados do jogador
+        adv_df = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(
+            player_id=p_id, per_mode_detailed='PerGame', measure_type_detailed='Advanced', season='2025-26'
+        ).get_data_frames()[0]
+        
+        # Busca dados básicos (PTS, AST, REB)
+        base_df = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(
+            player_id=p_id, per_mode_detailed='PerGame', season='2025-26'
+        ).get_data_frames()[0]
+
+        if adv_df.empty or base_df.empty: return None
+
         return {
-            's': s_df[['PTS', 'AST', 'REB']].iloc[0].to_dict(),
-            'l5': l5_df[['PTS', 'AST', 'REB']].iloc[0].to_dict() if not l5_df.empty else s_df[['PTS', 'AST', 'REB']].iloc[0].to_dict()
+            'pts': base_df['PTS'].iloc[0],
+            'ast': base_df['AST'].iloc[0],
+            'reb': base_df['REB'].iloc[0],
+            'usage': adv_df['USG_PCT'].iloc[0] * 100, # % de jogadas que passam por ele
+            'ts_pct': adv_df['TS_PCT'].iloc[0] * 100  # Eficiência real de arremesso
         }
     except: return None
 
-# Tenta buscar os dados
-data = fetch_all(p_id)
+# --- INTERFACE DE DECISÃO ---
+all_teams, league_data = get_base_data()
 
-if data:
-    st.session_state.data_ready = True
-    # Mostra médias reais (vistas na image_0f3b03.png)
+with st.sidebar:
+    st.header("⚡ Configuração")
+    t_sel = st.selectbox("Time", sorted(all_teams.keys()), key="t_s")
+    
+    try:
+        roster = commonteamroster.CommonTeamRoster(team_id=all_teams[t_sel], season='2025-26').get_data_frames()[0]
+        p_sel = st.selectbox("Jogador", roster['PLAYER'].tolist(), key="p_s")
+        p_id = roster[roster['PLAYER'] == p_sel]['PLAYER_ID'].values[0]
+    except:
+        st.stop()
+    
+    adv_sel = st.selectbox("Adversário", sorted(all_teams.keys()), key="a_s")
+
+# --- EXECUÇÃO DO MOTOR DE PREVISÃO ---
+p_stats = analyze_player_pro(p_id)
+
+if p_stats:
+    # Painel de Métricas Avançadas
+    st.subheader(f"📊 Intel: {p_sel}")
     c1, c2, c3 = st.columns(3)
-    c1.metric("PTS", f"{data['s']['PTS']:.1f}")
-    c2.metric("AST", f"{data['s']['AST']:.1f}")
-    c3.metric("REB", f"{data['s']['REB']:.1f}")
+    c1.metric("Média PTS", f"{p_stats['pts']:.1f}")
+    c2.metric("Usage Rate", f"{p_stats['usage']:.1f}%")
+    c3.metric("Eficiência", f"{p_stats['ts_pct']:.1f}%")
 
     st.markdown("---")
-    u_pts = st.number_input("Sua Previsão (PONTOS)", value=float(data['s']['PTS']), step=0.5)
+    u_pts = st.number_input("Sua Linha de Pontos", value=float(p_stats['pts']), step=0.5)
 
-    if st.button("ANALISAR AGORA"):
-        ranks = get_ranks()
-        if not ranks.empty:
-            r = ranks[ranks['TEAM_NAME'] == t_adv]['RANK'].values[0]
-            # Lógica de expectativa ajustada
-            base = (data['s']['PTS'] * 0.5) + (data['l5']['PTS'] * 0.5)
-            mod = (r - 15) * (0.02 if r >= 20 else 0.01)
-            expect = base * (1 + mod)
+    if st.button("ANALISAR AGORA (PRO)"):
+        if not league_data.empty:
+            adv_info = league_data[league_data['TEAM_NAME'] == adv_sel].iloc[0]
             
-            # Alerta de Blowout (Defesas Ranks 25-30)
-            if r >= 25:
-                st.warning(f"🚨 Risco de Blowout (Defesa Rank {r})")
-                expect *= 0.90
+            # ALGORITMO PREDITIVO v8.0
+            # 1. Base pela média e importância (Usage)
+            expectativa = p_stats['pts'] * (1 + (p_stats['usage'] - 20) / 100)
+            
+            # 2. Ajuste por Ritmo (Pace) - Jogos rápidos geram mais pontos
+            pace_factor = (adv_info['PACE'] - 100) / 100
+            expectativa *= (1 + pace_factor)
+            
+            # 3. Ajuste por Defesa (Rank)
+            def_bonus = (adv_info['DEF_RANK'] - 15) * 0.015
+            expectativa *= (1 + def_bonus)
 
-            diff = (u_pts - expect) / expect
-            if diff <= 0.10: st.success(f"✅ PROVÁVEL: {expect:.1f} PTS")
-            elif diff <= 0.25: st.warning(f"⚠️ INCERTO: {expect:.1f} PTS")
-            else: st.error(f"❌ IMPROVÁVEL: {expect:.1f} PTS")
+            # Resultado
+            diff = (u_pts - expectativa) / expectativa
+            if diff <= 0.08: st.success(f"✅ ALTA CONFIANÇA: {expectativa:.1f} PTS")
+            elif diff <= 0.18: st.warning(f"⚠️ MÉDIA CONFIANÇA: {expectativa:.1f} PTS")
+            else: st.error(f"❌ BAIXA CONFIANÇA: {expectativa:.1f} PTS")
+            
+            st.caption(f"Ajustes: Ritmo ({pace_factor*100:+.1f}%) | Defesa ({def_bonus*100:+.1f}%) | Usage (Incluso)")
 else:
-    st.session_state.data_ready = False
-    st.warning(f"⏳ Aguardando estatísticas estáveis para {sel_p}...")
+    st.info("Sincronizando estatísticas avançadas...")
