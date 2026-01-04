@@ -4,10 +4,9 @@ from nba_api.stats.static import teams
 from nba_api.stats.endpoints import (commonteamroster, leaguedashteamstats, 
                                      playerdashboardbygeneralsplits, playergamelog)
 
-# --- 1. CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="NBA Intel Forecast v16", layout="centered")
+# --- CONFIGURAÇÃO E ESTILO (ESTRUTURA ATUAL) ---
+st.set_page_config(page_title="NBA Intel Forecast", page_icon="🏀", layout="centered")
 
-# Estilos dos Cards (Baseado em image_1e4204.png)
 st.markdown("""
     <style>
     .stMetric { background-color: #ffffff; border: 1px solid #e1e4e8; padding: 15px; border-radius: 12px; }
@@ -17,70 +16,72 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. BUSCA DE DADOS COM TRATAMENTO DE ERROS ---
 @st.cache_data(ttl=3600)
-def get_full_intel(p_id):
+def get_intel_estavel(p_id):
     try:
-        # Médias da Temporada
+        # 1. Médias da Temporada (Barra Azul)
         base = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(
             player_id=p_id, per_mode_detailed='PerGame', season='2025-26'
         ).get_data_frames()[0]
         
-        # INFO DE DESEMPENHO (Histórico Recente)
+        # 2. DESEMPENHO REAL: Média dos últimos 5 jogos
         log = playergamelog.PlayerGameLog(player_id=p_id, season='2025-26').get_data_frames()[0]
         fase_pts = log['PTS'].head(5).mean()
+        fase_ast = log['AST'].head(5).mean()
         
         return {
-            'stats': base[['PTS', 'AST', 'REB']].iloc[0].to_dict(),
-            'fase': fase_pts
+            'stats': base[['PTS', 'AST', 'REB', 'STL', 'BLK']].iloc[0].to_dict(),
+            'fase': {'pts': fase_pts, 'ast': fase_ast}
         }
-    except Exception as e:
-        return f"Erro ao buscar dados: {e}"
+    except: return None
 
-# --- 3. INTERFACE (SIDEBAR) ---
-st.sidebar.header("Configuração")
+# --- SIDEBAR ---
 all_teams = {t['full_name']: t['id'] for t in teams.get_teams()}
-t_nome = st.sidebar.selectbox("Escolha o Time", sorted(all_teams.keys()))
+with st.sidebar:
+    st.header("Configuração")
+    t_nome = st.selectbox("Time do Jogador", sorted(all_teams.keys()))
+    try:
+        roster = commonteamroster.CommonTeamRoster(team_id=all_teams[t_nome]).get_data_frames()[0]
+        p_nome = st.selectbox("Jogador", roster['PLAYER'].tolist())
+        p_id = roster[roster['PLAYER'] == p_name]['PLAYER_ID'].values[0]
+    except: st.stop()
+    adv_nome = st.selectbox("Adversário", sorted(all_teams.keys()))
 
-try:
-    # Busca o elenco do time selecionado
-    roster = commonteamroster.CommonTeamRoster(team_id=all_teams[t_nome]).get_data_frames()[0]
-    p_nome = st.sidebar.selectbox("Escolha o Jogador", roster['PLAYER'].tolist())
-    p_id = roster[roster['PLAYER'] == p_name]['PLAYER_ID'].values[0]
-except:
-    st.error("Não foi possível carregar a lista de jogadores deste time.")
-    st.stop()
+# --- DASHBOARD DE ALTA EFICIÊNCIA ---
+intel = get_intel_estavel(p_id)
 
-adv_nome = st.sidebar.selectbox("Adversário", sorted(all_teams.keys()))
-
-# --- 4. EXIBIÇÃO ---
-intel = get_full_intel(p_id)
-
-if isinstance(intel, dict):
-    st.subheader(f"📊 Real: {p_nome}")
-    diff = intel['fase'] - intel['stats']['PTS']
+if intel:
+    st.subheader(f"📊 Real: {p_name}")
     
-    col1, col2, col3 = st.columns(3)
-    col1.metric("PTS (Média)", f"{intel['stats']['PTS']:.1f}", delta=f"{diff:+.1f} Fase")
-    col2.metric("AST", f"{intel['stats']['AST']:.1f}")
-    col3.metric("REB", f"{intel['stats']['REB']:.1f}")
+    # Cálculo de tendência para o indicador Delta
+    d_pts = intel['fase']['pts'] - intel['stats']['PTS']
+    d_ast = intel['fase']['ast'] - intel['stats']['AST']
+    
+    c1, c2, c3 = st.columns(3)
+    # Mostra a média com o indicador de fase (seta verde/vermelha)
+    c1.metric("PTS (Média)", f"{intel['stats']['PTS']:.1f}", delta=f"{d_pts:+.1f} Fase")
+    c2.metric("AST (Média)", f"{intel['stats']['AST']:.1f}", delta=f"{d_ast:+.1f} Fase")
+    c3.metric("REB", f"{intel['stats']['REB']:.1f}")
 
     st.markdown("---")
-    u_pts = st.number_input("Sua Linha de Pontos", value=float(intel['stats']['PTS']))
+    st.subheader(f"🔮 Previsão vs {adv_name}")
+    u_pts = st.number_input("Sua Linha de Pontos", value=float(intel['stats']['PTS']), step=0.5)
 
     if st.button("ANALISAR AGORA", use_container_width=True):
-        # Gráfico Comparativo de Desempenho (Estável)
+        # Gráfico de Barras Estável (Média vs Previsão como em image_1e4204.png)
         df_viz = pd.DataFrame({
-            'Valor': [intel['stats']['PTS'], u_pts, intel['fase']],
-            'Tipo': ['Média Anual', 'Sua Previsão', 'Fase Recente (5 J)']
+            'Valor': [intel['stats']['PTS'], u_pts],
+            'Tipo': ['Média Temporada', 'Sua Previsão']
         }).set_index('Tipo')
         st.bar_chart(df_viz)
+
+        # Veredito Final (Mesmo visual da image_1e4204.png)
+        st.subheader("📋 Veredito por Atributo")
+        is_provavel = u_pts <= (intel['stats']['PTS'] * 1.1)
+        classe = "provavel" if is_provavel else "improvavel"
+        msg = "Provável ✅" if is_provavel else "Improvável ❌"
         
-        # Veredito (Igual image_1e4204.png)
-        st.subheader("📋 Veredito Final")
-        is_prov = u_pts <= (intel['stats']['PTS'] * 1.1)
-        estilo = "provavel" if is_prov else "improvavel"
-        txt = "Provável ✅" if is_prov else "Improvável ❌"
-        st.markdown(f'<div class="status-card {estilo}">PONTOS: {txt}</div>', unsafe_allow_html=True)
-else:
-    st.warning("Aguardando resposta da NBA API... Tente selecionar o jogador novamente.")
+        st.markdown(f"""<div class="status-card {classe}">PONTOS: {msg}</div>""", unsafe_allow_html=True)
+        
+        # INFORMAÇÃO DE DESEMPENHO TEXTUAL (Alta Qualidade)
+        st.info(f"💡 Info de Desempenho: {p_name} está com média de {intel['fase']['pts']:.1f} PTS nos últimos 5 jogos.")
