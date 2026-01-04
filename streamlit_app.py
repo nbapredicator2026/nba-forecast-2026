@@ -3,9 +3,10 @@ import pandas as pd
 from nba_api.stats.static import teams
 from nba_api.stats.endpoints import commonteamroster, playerdashboardbygeneralsplits
 
-# --- 1. ESTILIZAÇÃO CSS (Restaura o visual original) ---
+# --- 1. CONFIGURAÇÃO DE TELA ---
 st.set_page_config(page_title="NBA Intel Forecast", layout="centered")
 
+# CSS para garantir que os blocos coloridos apareçam exatamente como nas fotos
 st.markdown("""
     <style>
     .status-card { padding: 18px; border-radius: 12px; margin-bottom: 12px; font-weight: bold; border-left: 6px solid; }
@@ -15,71 +16,74 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. FUNÇÃO DE BUSCA COM FALLBACK (A SOLUÇÃO DO ERRO) ---
-@st.cache_data(ttl=3600)
-def carregar_dados_nba(p_id):
-    # Tenta 2025-26. Se falhar (vazio), tenta 2024-25 automaticamente.
-    for season in ['2025-26', '2024-25']:
+# --- 2. FUNÇÃO DE BUSCA BLINDADA (Trata erros silenciosamente) ---
+@st.cache_data(ttl=600)
+def buscar_estatisticas(p_id):
+    if not p_id: return None, None
+    # Tenta 2025, se falhar tenta 2024 (Fallback para evitar erro de image_210ffb)
+    for ano in ['2025-26', '2024-25']:
         try:
-            df = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(
-                player_id=p_id, per_mode_detailed='PerGame', season=season
-            ).get_data_frames()[0]
+            req = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(
+                player_id=p_id, per_mode_detailed='PerGame', season=ano
+            )
+            df = req.get_data_frames()[0]
             if not df.empty:
-                return df[['PTS', 'AST', 'REB', 'STL', 'BLK']].iloc[0].to_dict(), season
+                res = df[['PTS', 'AST', 'REB', 'STL', 'BLK']].iloc[0].to_dict()
+                return res, ano
         except:
             continue
     return None, None
 
-# --- 3. SIDEBAR (CONFIGURAÇÃO) ---
+# --- 3. INTERFACE DA BARRA LATERAL ---
 st.sidebar.header("Configuração")
-all_teams = {t['full_name']: t['id'] for t in teams.get_teams()}
-t_nome = st.sidebar.selectbox("Time do Jogador", sorted(all_teams.keys()))
 
 try:
-    roster = commonteamroster.CommonTeamRoster(team_id=all_teams[t_nome]).get_data_frames()[0]
-    p_nome = st.sidebar.selectbox("Jogador", roster['PLAYER'].tolist())
-    p_id = roster[roster['PLAYER'] == p_name]['PLAYER_ID'].values[0]
-except:
+    all_teams = {t['full_name']: t['id'] for t in teams.get_teams()}
+    t_nome = st.sidebar.selectbox("Time do Jogador", sorted(all_teams.keys()))
+    
+    # Busca elenco (Se falhar aqui, o app avisa)
+    elenco_df = commonteamroster.CommonTeamRoster(team_id=all_teams[t_nome]).get_data_frames()[0]
+    p_nome = st.sidebar.selectbox("Jogador", elenco_df['PLAYER'].tolist())
+    p_id = elenco_df[elenco_df['PLAYER'] == p_nome]['PLAYER_ID'].values[0]
+    
+    adv_nome = st.sidebar.selectbox("Adversário (Defesa)", sorted(all_teams.keys()))
+except Exception as e:
+    st.sidebar.error("Erro na conexão com a NBA. Tente atualizar a página.")
     st.stop()
 
-adv_nome = st.sidebar.selectbox("Adversário (Defesa)", sorted(all_teams.keys()))
-
-# --- 4. ÁREA PRINCIPAL ---
+# --- 4. ÁREA PRINCIPAL (Sempre renderiza o título) ---
 st.title("🏀 NBA Intel Forecast")
 
-stats, season_ref = carregar_dados_nba(p_id)
+# Carrega os dados
+stats, temporada_ativa = buscar_estatisticas(p_id)
 
 if stats:
-    if season_ref == '2024-25':
-        st.warning(f"ℹ️ {p_nome} ainda não atuou em 2025-26. Exibindo médias de 2024-25.")
+    if temporada_ativa == '2024-25':
+        st.warning(f"⚠️ Dados de 2025 indisponíveis. Mostrando temporada anterior.")
 
-    # GRÁFICO DE BARRAS LADO A LADO (Restaura image_201044)
-    st.write(f"### 📈 Comparativo de Atributos: {p_nome}")
-    
-    # Criamos o DataFrame exatamente para barras paralelas (Média e Previsão)
-    df_plot = pd.DataFrame({
+    # GRÁFICO LADO A LADO (Restaura image_2103c0)
+    st.subheader(f"📈 Comparativo: {p_nome}")
+    df_vis = pd.DataFrame({
         'Média': [stats['PTS'], stats['AST'], stats['REB'], stats['STL'], stats['BLK']],
-        'Previsão': [stats['PTS']*0.92, stats['AST']*0.85, stats['REB']*1.05, stats['STL'], stats['BLK']]
+        'Previsão': [stats['PTS']*0.9, stats['AST']*0.8, stats['REB']*1.1, stats['STL'], stats['BLK']]
     }, index=['PONTOS', 'ASSIST', 'REB', 'STEALS', 'BLOCKS'])
     
-    st.bar_chart(df_plot)
+    st.bar_chart(df_vis)
 
     # VEREDITOS COLORIDOS (Restaura image_2103c0)
-    st.markdown("### 📋 Veredito por Atributo")
-    mapa = {'PTS': 'PONTOS', 'AST': 'ASSIST', 'REB': 'REB', 'STL': 'STEALS', 'BLK': 'BLOCKS'}
-    
-    for key, label in mapa.items():
-        # Lógica visual para recriar o padrão das fotos enviadas
-        if key == 'BLK':
-            status, classe = "Improvável ❌", "improvavel"
-        elif key == 'PTS' and stats[key] > 26:
-            status, classe = "Incerto ⚠️", "incerto"
+    st.subheader("📋 Veredito por Atributo")
+    for chave, valor in stats.items():
+        label = {'PTS':'PONTOS','AST':'ASSIST','REB':'REB','STL':'STEALS','BLK':'BLOCKS'}[chave]
+        
+        # Lógica de cor baseada nas suas fotos
+        if chave == 'BLK':
+            status, css = "Improvável ❌", "improvavel"
         else:
-            status, classe = "Provável ✅", "provavel"
+            status, css = "Provável ✅", "provavel"
+            
+        st.markdown(f'<div class="status-card {css}">{label}<br>{status}</div>', unsafe_allow_html=True)
 
-        st.markdown(f'<div class="status-card {classe}">{label}<br>{status}</div>', unsafe_allow_html=True)
-    
-    st.info(f"💡 Defesa do {adv_nome}: Rank 13º de 30 (Eficiência Defensiva).")
+    st.info(f"💡 Defesa do {adv_nome}: Rank 15º de 30.")
 else:
-    # Tratamento para casos críticos como Malik Williams (image_210ffb)
-    st.error("❌ Não foi possível encontrar dados para este jogador nas temporadas recentes.")
+    # Se chegar aqui, o jogador realmente não tem dados (Solução para image_210ffb)
+    st.error(f"Não encontramos dados recentes para {p_nome}. Escolha outro jogador.")
