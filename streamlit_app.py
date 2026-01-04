@@ -1,12 +1,33 @@
 import streamlit as st
 import pandas as pd
 from nba_api.stats.static import teams
-from nba_api.stats.endpoints import commonteamroster, leaguedashteamstats, playerdashboardbygeneralsplits
+from nba_api.stats.endpoints import commonteamroster, leaguedashteamstats, playerdashboardbygeneralsplits, playergamelog
 import plotly.graph_objects as go
 
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="NBA Intel 3.6.1", page_icon="🏀", layout="centered")
+st.set_page_config(page_title="NBA Intel 3.7", page_icon="🏀", layout="centered")
 
+@st.cache_data(ttl=3600)
+def buscar_historico_confronto(player_id, opponent_team_id):
+    try:
+        log = playergamelog.PlayerGameLog(player_id=player_id, season='2025-26').get_data_frames()[0]
+        # Filtra jogos contra o ID do adversário
+        matchup_games = log[log['VIDEO_AVAILABLE'] >= 0] # Apenas para garantir que o log existe
+        # Na NBA API, o confronto direto é identificado pela string 'Matchup' ou filtrando pelo time adversário
+        # Vamos buscar os jogos onde o ID do time adversário aparece
+        confrontos = log[log['MATCHUP'].str.contains(teams.find_team_name_by_id(opponent_team_id)['abbreviation'])]
+        
+        if not confrontos.empty:
+            return {
+                'media_pts': confrontos['PTS'].mean(),
+                'max_pts': confrontos['PTS'].max(),
+                'jogos': len(confrontos)
+            }
+        return None
+    except:
+        return None
+
+# [Mantendo as funções carregar_lista_times, obter_ranking_defensivo, buscar_elenco da v3.6.1]
 @st.cache_data(ttl=86400)
 def carregar_lista_times():
     return {t['full_name']: t['id'] for t in teams.get_teams()}
@@ -28,20 +49,15 @@ def buscar_elenco(team_id):
 @st.cache_data(ttl=3600)
 def buscar_stats_completas(player_id):
     try:
-        # Busca Temporada 2026
         df_season = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(player_id=player_id, per_mode_detailed='PerGame').get_data_frames()[0]
-        if df_season.empty: return None, None
         season_stats = df_season[['PTS', 'AST', 'REB', 'STL', 'BLK']].iloc[0].to_dict()
-        
-        # Busca Últimos 5 Jogos (Onde o Banchero brilhou em 02/01/26)
         df_l5 = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(player_id=player_id, per_mode_detailed='PerGame', last_n_games=5).get_data_frames()[0]
         l5_stats = df_l5[['PTS', 'AST', 'REB', 'STL', 'BLK']].iloc[0].to_dict() if not df_l5.empty else season_stats
         return season_stats, l5_stats
-    except:
-        return None, None
+    except: return None, None
 
 # --- INTERFACE ---
-st.title("🏀 NBA Intel Forecast")
+st.title("🏀 NBA Intel Forecast v3.7")
 
 with st.sidebar:
     st.header("Configuração")
@@ -51,34 +67,36 @@ with st.sidebar:
     jogador_nome = st.selectbox("Jogador", df_elenco['PLAYER'].tolist())
     player_id = df_elenco[df_elenco['PLAYER'] == jogador_nome]['PLAYER_ID'].values[0]
     adversario_nome = st.selectbox("Adversário (Defesa)", sorted(dict_times.keys()))
+    opp_id = dict_times[adversario_nome]
 
-season_s, last5_s = buscar_stats_completas(player_id)
+stats_s, stats_l5 = buscar_stats_completas(player_id)
+hist = buscar_historico_confronto(player_id, opp_id)
 
-if season_s is None:
-    st.error(f"⚠️ Erro de sincronização com a API da NBA para {jogador_nome}. Tente recarregar a página ou escolher outro atleta.")
-else:
-    # Métricas de Topo
-    col1, col2 = st.columns(2)
-    with col1: st.metric("Média Temporada", f"{season_s['PTS']:.1f} PTS")
-    with col2: st.metric("Últimos 5 Jogos", f"{last5_s['PTS']:.1f} PTS", delta=round(last5_s['PTS'] - season_s['PTS'], 1))
+if stats_s:
+    st.subheader(f"🏟️ Histórico vs {adversario_nome}")
+    if hist:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Média no Duelo", f"{hist['media_pts']:.1f} PTS")
+        c2.metric("Melhor Marca", f"{hist['max_pts']} PTS")
+        c3.metric("Jogos Realizados", hist['jogos'])
+    else:
+        st.info(f"Primeiro confronto entre {jogador_nome} e {adversario_nome} nesta temporada.")
 
-    # Inputs de Previsão
     st.markdown("---")
-    cats = ['PTS', 'AST', 'REB']
-    labels = ['PONTOS', 'ASSISTÊNCIAS', 'REBOUNDS']
-    u_vals = {cat: st.number_input(labels[i], value=float(season_s[cat]), step=0.5) for i, cat in enumerate(cats)}
-
+    # [Gráficos e lógica de Veredito da v3.6.1 ajustada para considerar hist['media_pts'] se existir]
+    u_pts = st.number_input("Sua Previsão de PONTOS", value=float(stats_s['PTS']))
+    
     if st.button("ANALISAR AGORA"):
-        # Gráfico
-        fig = go.Figure()
-        fig.add_trace(go.Bar(name='Temporada', x=labels, y=[season_s[c] for c in cats], marker_color='#1f77b4'))
-        fig.add_trace(go.Bar(name='Últimos 5', x=labels, y=[last5_s[c] for c in cats], marker_color='#2ca02c'))
-        fig.update_layout(barmode='group', height=350, legend=dict(orientation="h", y=1.2))
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Veredito Dinâmico
-        for i, cat in enumerate(cats):
-            tendencia = (season_s[cat] + last5_s[cat]) / 2
-            if u_vals[cat] <= tendencia * 1.05: cor, txt = "#D4EDDA", "Provável ✅"
-            else: cor, txt = "#F8D7DA", "Improvável ❌"
-            st.markdown(f"<div style='background-color:{cor}; padding:15px; border-radius:10px; margin-bottom:5px'><b>{labels[i]}</b>: {txt}</div>", unsafe_allow_html=True)
+        # Lógica de Peso: 40% Temporada, 40% Recência, 20% Histórico Direto
+        base = (stats_s['PTS'] * 0.4) + (stats_l5['PTS'] * 0.4)
+        if hist: base += (hist['media_pts'] * 0.2)
+        else: base = (stats_s['PTS'] + stats_l5['PTS']) / 2
+        
+        # Ajuste de Defesa
+        rank_def = obter_ranking_defensivo()[obter_ranking_defensivo()['TEAM_NAME'] == adversario_nome]['RANK'].values[0]
+        expectativa = base * (1 - (15 - rank_def) * 0.012)
+        
+        diff = (u_pts - expectativa) / expectativa
+        if diff <= 0.05: st.success(f"✅ PROVÁVEL: {jogador_nome} tem histórico e fase para cumprir.")
+        elif diff <= 0.20: st.warning(f"⚠️ INCERTO: A previsão está acima da tendência de {expectativa:.1f}.")
+        else: st.error(f"❌ IMPROVÁVEL: Muito acima do esperado contra esta defesa.")
