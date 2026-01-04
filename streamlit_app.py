@@ -4,8 +4,8 @@ from nba_api.stats.static import teams
 from nba_api.stats.endpoints import (commonteamroster, leaguedashteamstats, 
                                      playerdashboardbygeneralsplits, playergamelog)
 
-# --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="NBA Intel Forecast", layout="centered")
+# --- CONFIGURAÇÃO E ESTILO (ESTRUTURA ATUAL) ---
+st.set_page_config(page_title="NBA Intel Forecast", page_icon="🏀", layout="centered")
 
 st.markdown("""
     <style>
@@ -17,57 +17,71 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 @st.cache_data(ttl=3600)
-def get_nba_data(p_id):
-    # Médias da Temporada
-    base = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(
-        player_id=p_id, per_mode_detailed='PerGame', season='2025-26'
-    ).get_data_frames()[0]
-    
-    # DESEMPENHO RECENTE (A Chave do Gráfico de Desempenho)
-    log = playergamelog.PlayerGameLog(player_id=p_id, season='2025-26').get_data_frames()[0]
-    media_recente = log['PTS'].head(5).mean()
-    
-    return {
-        'stats': base[['PTS', 'AST', 'REB']].iloc[0].to_dict(),
-        'fase': media_recente
-    }
+def get_intel_estavel(p_id):
+    try:
+        # 1. Médias da Temporada (Barra Azul)
+        base = playerdashboardbygeneralsplits.PlayerDashboardByGeneralSplits(
+            player_id=p_id, per_mode_detailed='PerGame', season='2025-26'
+        ).get_data_frames()[0]
+        
+        # 2. DESEMPENHO REAL: Média dos últimos 5 jogos
+        log = playergamelog.PlayerGameLog(player_id=p_id, season='2025-26').get_data_frames()[0]
+        fase_pts = log['PTS'].head(5).mean()
+        fase_ast = log['AST'].head(5).mean()
+        
+        return {
+            'stats': base[['PTS', 'AST', 'REB', 'STL', 'BLK']].iloc[0].to_dict(),
+            'fase': {'pts': fase_pts, 'ast': fase_ast}
+        }
+    except: return None
 
-# --- INTERFACE ---
-st.title("🏀 NBA Intel Forecast")
-
-# Sidebar para seleções
+# --- SIDEBAR ---
 all_teams = {t['full_name']: t['id'] for t in teams.get_teams()}
-t_nome = st.sidebar.selectbox("Time", sorted(all_teams.keys()))
-roster = commonteamroster.CommonTeamRoster(team_id=all_teams[t_nome]).get_data_frames()[0]
-p_nome = st.sidebar.selectbox("Jogador", roster['PLAYER'].tolist())
-p_id = roster[roster['PLAYER'] == p_name]['PLAYER_ID'].values[0]
-adv_nome = st.sidebar.selectbox("Adversário", sorted(all_teams.keys()))
+with st.sidebar:
+    st.header("Configuração")
+    t_nome = st.selectbox("Time do Jogador", sorted(all_teams.keys()))
+    try:
+        roster = commonteamroster.CommonTeamRoster(team_id=all_teams[t_nome]).get_data_frames()[0]
+        p_nome = st.selectbox("Jogador", roster['PLAYER'].tolist())
+        p_id = roster[roster['PLAYER'] == p_name]['PLAYER_ID'].values[0]
+    except: st.stop()
+    adv_nome = st.selectbox("Adversário", sorted(all_teams.keys()))
 
-data = get_nba_data(p_id)
+# --- DASHBOARD DE ALTA EFICIÊNCIA ---
+intel = get_intel_estavel(p_id)
 
-if data:
-    # 1. Cards com Indicador de Desempenho (Delta)
-    diff = data['fase'] - data['stats']['PTS']
+if intel:
     st.subheader(f"📊 Real: {p_name}")
+    
+    # Cálculo de tendência para o indicador Delta
+    d_pts = intel['fase']['pts'] - intel['stats']['PTS']
+    d_ast = intel['fase']['ast'] - intel['stats']['AST']
+    
     c1, c2, c3 = st.columns(3)
-    c1.metric("PTS (Média)", f"{data['stats']['PTS']:.1f}", delta=f"{diff:+.1f} Fase")
-    c2.metric("AST", f"{data['stats']['AST']:.1f}")
-    c3.metric("REB", f"{data['stats']['REB']:.1f}")
+    # Mostra a média com o indicador de fase (seta verde/vermelha)
+    c1.metric("PTS (Média)", f"{intel['stats']['PTS']:.1f}", delta=f"{d_pts:+.1f} Fase")
+    c2.metric("AST (Média)", f"{intel['stats']['AST']:.1f}", delta=f"{d_ast:+.1f} Fase")
+    c3.metric("REB", f"{intel['stats']['REB']:.1f}")
 
-    # 2. Previsão e Veredito
     st.markdown("---")
-    previsao = st.number_input("Sua Linha de Pontos", value=float(data['stats']['PTS']))
+    st.subheader(f"🔮 Previsão vs {adv_name}")
+    u_pts = st.number_input("Sua Linha de Pontos", value=float(intel['stats']['PTS']), step=0.5)
 
     if st.button("ANALISAR AGORA", use_container_width=True):
-        # Gráfico Comparativo de Desempenho Estável
+        # Gráfico de Barras Estável (Média vs Previsão como em image_1e4204.png)
         df_viz = pd.DataFrame({
-            'Valor': [data['stats']['PTS'], previsao, data['fase']],
-            'Tipo': ['Média Anual', 'Sua Previsão', 'Desempenho (Últimos 5)']
+            'Valor': [intel['stats']['PTS'], u_pts],
+            'Tipo': ['Média Temporada', 'Sua Previsão']
         }).set_index('Tipo')
         st.bar_chart(df_viz)
 
-        # Veredito Visual
-        is_prov = previsao <= (data['stats']['PTS'] * 1.1)
-        estilo = "provavel" if is_prov else "improvavel"
-        txt = "Provável ✅" if is_prov else "Improvável ❌"
-        st.markdown(f'<div class="status-card {estilo}">PONTOS: {txt}</div>', unsafe_allow_html=True)
+        # Veredito Final (Mesmo visual da image_1e4204.png)
+        st.subheader("📋 Veredito por Atributo")
+        is_provavel = u_pts <= (intel['stats']['PTS'] * 1.1)
+        classe = "provavel" if is_provavel else "improvavel"
+        msg = "Provável ✅" if is_provavel else "Improvável ❌"
+        
+        st.markdown(f"""<div class="status-card {classe}">PONTOS: {msg}</div>""", unsafe_allow_html=True)
+        
+        # INFORMAÇÃO DE DESEMPENHO TEXTUAL (Alta Qualidade)
+        st.info(f"💡 Info de Desempenho: {p_name} está com média de {intel['fase']['pts']:.1f} PTS nos últimos 5 jogos.")
