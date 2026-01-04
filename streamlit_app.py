@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="NBA Intel v3.8", page_icon="🏀", layout="centered")
 
+# CSS para interface moderna e responsiva
 st.markdown("""
     <style>
     .stMetric { background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #1f77b4; }
@@ -15,7 +16,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- FUNÇÕES DE DADOS ---
+# --- FUNÇÕES DE DADOS COM TRATAMENTO DE ERRO ---
 @st.cache_data(ttl=86400)
 def carregar_lista_times():
     return {t['full_name']: t['id'] for t in teams.get_teams()}
@@ -32,7 +33,10 @@ def obter_ranking_defensivo():
 
 @st.cache_data(ttl=7200)
 def buscar_elenco(team_id):
-    return commonteamroster.CommonTeamRoster(team_id=team_id, season='2025-26').get_data_frames()[0][['PLAYER', 'PLAYER_ID']]
+    try:
+        return commonteamroster.CommonTeamRoster(team_id=team_id, season='2025-26').get_data_frames()[0][['PLAYER', 'PLAYER_ID']]
+    except:
+        return pd.DataFrame(columns=['PLAYER', 'PLAYER_ID'])
 
 @st.cache_data(ttl=3600)
 def buscar_stats_completas(player_id):
@@ -57,7 +61,7 @@ def buscar_historico_direto(player_id, opponent_name):
         return None
     except: return None
 
-# --- INTERFACE ---
+# --- INTERFACE PRINCIPAL ---
 st.title("🏀 NBA Intel Forecast v3.8")
 
 with st.sidebar:
@@ -65,4 +69,69 @@ with st.sidebar:
     dict_times = carregar_lista_times()
     time_nome = st.selectbox("Time do Jogador", sorted(dict_times.keys()))
     df_elenco = buscar_elenco(dict_times[time_nome])
-    jogador_nome = st.selectbox("Jogador", df_elenco['PLAYER'].
+    
+    if not df_elenco.empty:
+        jogador_nome = st.selectbox("Jogador", df_elenco['PLAYER'].tolist())
+        p_id = df_elenco[df_elenco['PLAYER'] == jogador_nome]['PLAYER_ID'].values[0]
+    else:
+        st.error("Erro ao carregar elenco.")
+        st.stop()
+        
+    adversario_nome = st.selectbox("Adversário (Defesa)", sorted(dict_times.keys()))
+
+# Processamento de Dados
+s_stats, l5_stats = buscar_stats_completas(p_id)
+df_def = obter_ranking_defensivo()
+rank_def = df_def[df_def['TEAM_NAME'] == adversario_nome]['RANK'].values[0]
+hist = buscar_historico_direto(p_id, adversario_nome)
+
+if s_stats:
+    # Cabeçalho de Métricas
+    col1, col2 = st.columns(2)
+    with col1: st.metric("Média Temporada", f"{s_stats['PTS']:.1f} PTS")
+    with col2: 
+        diff_l5 = l5_stats['PTS'] - s_stats['PTS']
+        st.metric("Últimos 5 Jogos", f"{l5_stats['PTS']:.1f} PTS", delta=f"{diff_l5:+.1f}")
+
+    if hist:
+        st.info(f"🏟️ **Histórico Direto:** {jogador_nome} tem média de {hist['media']:.1f} PTS contra o {adversario_nome}.")
+
+    st.markdown("---")
+    u_pts = st.number_input("Sua Previsão de PONTOS", value=float(s_stats['PTS']), step=0.5)
+
+    if st.button("ANALISAR AGORA"):
+        # 1. Base Ponderada (Temporada 40% / Recência 40% / Histórico 20%)
+        base = (s_stats['PTS'] * 0.4) + (l5_stats['PTS'] * 0.4)
+        if hist: base += (hist['media'] * 0.2)
+        else: base = (s_stats['PTS'] + l5_stats['PTS']) / 2
+
+        # 2. Ajuste Agressivo de Defesa (Rank 20+ ganha 2% de bônus por nível)
+        fator = (rank_def - 15) * (0.020 if rank_def >= 20 else 0.012)
+        expectativa = base * (1 + fator)
+
+        # 3. Detector de Blowout (Rank 25+ dispara alerta)
+        if rank_def >= 25:
+            st.error("⚠️ **ALERTA DE BLOWOUT:** Defesa adversária muito frágil. Risco de redução de minutos no 4º quarto.")
+            expectativa_segura = expectativa * 0.88
+            st.info(f"💡 **Ajuste de Segurança:** Meta ideal de **{expectativa_segura:.1f} PTS**.")
+            expectativa = expectativa_segura
+
+        # 4. Veredito Visual
+        diff = (u_pts - expectativa) / expectativa
+        if diff <= 0.10:
+            cor, txt, icon = "#D4EDDA", "PROVÁVEL", "✅"
+        elif diff <= 0.25:
+            cor, txt, icon = "#FFF3CD", "INCERTO", "⚠️"
+        else:
+            cor, txt, icon = "#F8D7DA", "IMPROVÁVEL", "❌"
+
+        st.markdown(f"""
+            <div class="alert-box" style="background-color:{cor}; border-color: gray;">
+                <h3 style="margin:0;">{icon} {txt}</h3>
+                <p style="margin:0;">A expectativa para este matchup é de <b>{expectativa:.1f} pontos</b>.</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.caption(f"Fator: Defesa do {adversario_nome} ocupa o Rank {rank_def} de 30.")
+else:
+    st.warning("Aguardando carregamento de dados da API da NBA...")
